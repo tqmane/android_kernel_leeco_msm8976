@@ -58,12 +58,6 @@ jobs:
             xz-utils \
             zip
 
-      - name: Apply Docker cgroup source compatibility fixes
-        run: |
-          python3 scripts/prepare-docker-source.py
-          git diff --check
-          git diff -- mm/memcontrol.c kernel/cpuset.c
-
       - name: Fetch LineageOS GCC 4.9 toolchain
         run: |
           git clone \
@@ -211,6 +205,7 @@ jobs:
           {
             echo '## LeEco Le 2 (s2) Docker kernel'
             echo
+            echo '- Profile: `Android 11 boot-safe` (CPUSET/MEMCG disabled)'
             echo "- Source commit: \`${GITHUB_SHA}\`"
             echo "- Base config: \`arch/arm64/configs/lineage_s2_defconfig\`"
             echo "- Docker config: \`arch/arm64/configs/lineage_s2_docker.config\`"

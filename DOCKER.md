@@ -4,26 +4,34 @@ This branch keeps `arch/arm64/configs/lineage_s2_defconfig` as the canonical
 LineageOS base config and layers `arch/arm64/configs/lineage_s2_docker.config`
 on top for the dedicated Docker build.
 
-The Docker configuration enables legacy cgroup code paths that are normally
-unused by the stock s2 defconfig. Before compiling, run:
+## Android 11 boot-safe profile
 
-```sh
-python3 scripts/prepare-docker-source.py
-```
+The default Docker fragment intentionally keeps `CONFIG_CPUSETS` and the
+`CONFIG_MEMCG*` family disabled.
 
-The script applies two narrowly scoped compatibility fixes needed by this old
-3.10 tree: it removes the duplicate memory-cgroup `allow_attach` implementation
-in favor of the common Android cgroup helper, and fixes an incomplete cpuset
-hotplug backport that references the nonexistent `cpus_requested` field. The
-GitHub Actions workflow runs this preparation step automatically.
+Enabling those controllers in this old 3.10 tree exposes two dormant/incomplete
+Android backports: a duplicate memory-cgroup `allow_attach` implementation and
+a cpuset hotplug path that references a `cpus_requested` field that is not
+implemented by the rest of this tree. A previous build-time source-rewrite
+workaround made that configuration compile, but the resulting kernel failed to
+boot LineageOS 18.1 correctly on the device. The plain `lineage_s2_defconfig`
+build boots, so the default Docker profile now avoids those unsafe source paths
+instead of rewriting kernel sources during CI.
+
+This means the first boot-safe Docker profile does **not** provide Docker memory
+limits, swap limits, or cpuset-based CPU pinning. Core namespaces, the devices
+and freezer cgroup-v1 controllers, veth/bridge, netfilter/NAT, IPVS, IPC,
+seccomp, blkio/accounting controls and related container networking support
+remain enabled. CPUSET/MEMCG should only be restored after proper source
+backports are implemented and tested on hardware.
 
 ## Build with GitHub Actions
 
-After this change is on the default branch:
+After this change is on the selected branch:
 
 1. Open **Actions**.
 2. Select **Build Docker kernel (s2)**.
-3. Choose **Run workflow**.
+3. Choose **Run workflow** and select the branch to test.
 4. Download the produced artifact.
 
 The artifact contains:
@@ -37,14 +45,9 @@ The artifact contains:
 The workflow is intentionally `workflow_dispatch` only. It does not run on
 pushes or pull requests.
 
-## Docker-related kernel configuration
-
-The Docker config fragment enables the namespace, cgroup v1, veth/bridge,
-netfilter/NAT, IPVS, IPC and seccomp functionality required for a practical
-Docker/runc environment on this Linux 3.10 kernel.
-
-The workflow verifies that every requested option survives Kconfig dependency
-resolution before compiling.
+The workflow also verifies both enabled options and the boot-safety options
+that are explicitly required to remain disabled after Kconfig dependency
+resolution.
 
 ## Storage driver note
 
@@ -65,7 +68,7 @@ large filesystem backport to the device kernel.
 
 Kernel support alone does not mount cgroup controllers for a Linux chroot.
 Before starting `dockerd`, the Android/root-side setup must expose `/proc`,
-`/sys`, `/dev`, `/dev/pts` and the needed cgroup v1 controllers inside the
+`/sys`, `/dev`, `/dev/pts` and the available cgroup v1 controllers inside the
 chroot. Networking also needs IPv4 forwarding and the usual bridge/NAT setup.
 
 The AnyKernel3 ZIP only replaces the kernel while preserving the existing boot
