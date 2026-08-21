@@ -1,4 +1,4 @@
-#! /usr/bin/env python2
+#! /usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 # Copyright (c) 2011-2012, 2015, The Linux Foundation. All rights reserved.
@@ -31,10 +31,10 @@
 # non-whitelisted warnings.
 
 import errno
-import re
 import os
-import sys
+import re
 import subprocess
+import sys
 
 # Note that gcc uses unicode, which may depend on the locale.  TODO:
 # force LANG to be set to en_US.UTF-8 to get consistent warnings.
@@ -51,18 +51,20 @@ allowed_warnings = set([
     "nfnetlink_queue_core.c:264",
     "nfnetlink_queue_core.c:265",
     "irq.c:159",
- ])
+])
 
-# Capture the name of the object file, can find it.
+# Capture the name of the object file, if we can find it.
 ofile = None
 
 warning_re = re.compile(r'''(.*/|)([^/]+\.[a-z]+:\d+):(\d+:)? warning:''')
+
+
 def interpret_warning(line):
-    """Decode the message from gcc.  The messages we care about have a filename, and a warning"""
+    """Decode a gcc diagnostic and reject non-whitelisted warnings."""
     line = line.rstrip('\n')
     m = warning_re.match(line)
     if m and m.group(2) not in allowed_warnings:
-        print "error, forbidden warning:", m.group(2)
+        print("error, forbidden warning:", m.group(2))
 
         # If there is a warning, remove any object if it exists.
         if ofile:
@@ -72,34 +74,42 @@ def interpret_warning(line):
                 pass
         sys.exit(1)
 
+
 def run_gcc():
     args = sys.argv[1:]
-    # Look for -o
+
+    # Look for -o.
     try:
         i = args.index('-o')
         global ofile
-        ofile = args[i+1]
+        ofile = args[i + 1]
     except (ValueError, IndexError):
         pass
 
-    compiler = sys.argv[0]
-
     try:
-        proc = subprocess.Popen(args, stderr=subprocess.PIPE)
+        # Python 3 returns bytes from PIPE by default.  Request text mode so
+        # the warning parser keeps the same behavior as the old Python 2
+        # wrapper while allowing modern build hosts to run it directly.
+        proc = subprocess.Popen(
+            args,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+        )
         for line in proc.stderr:
-            print line,
+            print(line, end='')
             interpret_warning(line)
 
         result = proc.wait()
     except OSError as e:
         result = e.errno
         if result == errno.ENOENT:
-            print args[0] + ':',e.strerror
-            print 'Is your PATH set correctly?'
+            print(args[0] + ':', e.strerror)
+            print('Is your PATH set correctly?')
         else:
-            print ' '.join(args), str(e)
+            print(' '.join(args), str(e))
 
     return result
+
 
 if __name__ == '__main__':
     status = run_gcc()
