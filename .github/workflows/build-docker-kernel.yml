@@ -30,6 +30,7 @@ jobs:
       TOOLCHAIN_DIR: ${{ github.workspace }}/toolchain
       OUT_DIR: ${{ github.workspace }}/out
       AK3_COMMIT: e4b1bb25ca2aabcfd57f694a5998d87130701b71
+      ARTIFACT_SUFFIX: ${{ inputs.artifact_suffix }}
 
     steps:
       - name: Checkout kernel
@@ -117,8 +118,6 @@ jobs:
           find "$OUT_DIR/arch/arm64/boot/dts" \
             -type f -name '*.dtb' -print -exec ls -lh {} \;
 
-          # lineage_s2_defconfig enables CONFIG_PRODUCT_S2, whose device-tree
-          # target is s2.dtb. Fail early if it was not produced.
           test -s "$OUT_DIR/arch/arm64/boot/dts/s2.dtb"
 
       - name: Prepare raw build artifacts
@@ -129,9 +128,11 @@ jobs:
           cp "$OUT_DIR/arch/arm64/boot/Image.gz-dtb" dist/raw/
           cp "$OUT_DIR/.config" dist/raw/kernel.config
 
-          find "$OUT_DIR/arch/arm64/boot/dts" \
-            -type f -name '*.dtb' \
-            -exec cp --parents {} dist/raw/dtbs/ \;
+          while IFS= read -r dtb; do
+            rel="${dtb#"$OUT_DIR/arch/arm64/boot/dts/"}"
+            mkdir -p "dist/raw/dtbs/$(dirname "$rel")"
+            cp "$dtb" "dist/raw/dtbs/$rel"
+          done < <(find "$OUT_DIR/arch/arm64/boot/dts" -type f -name '*.dtb' | sort)
 
           printf '%s\n' "${GITHUB_SHA}" > dist/raw/kernel-source-commit.txt
           (cd dist/raw && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum) \
@@ -163,14 +164,18 @@ jobs:
           printf '%s\n' "${GITHUB_SHA}" > anykernel3/build-info/kernel-source-commit.txt
           printf '%s\n' "${AK3_COMMIT}" > anykernel3/build-info/anykernel3-commit.txt
 
-          find "$OUT_DIR/arch/arm64/boot/dts" \
-            -type f -name '*.dtb' \
-            -exec cp --parents {} anykernel3/build-info/dtbs/ \;
+          while IFS= read -r dtb; do
+            rel="${dtb#"$OUT_DIR/arch/arm64/boot/dts/"}"
+            mkdir -p "anykernel3/build-info/dtbs/$(dirname "$rel")"
+            cp "$dtb" "anykernel3/build-info/dtbs/$rel"
+          done < <(find "$OUT_DIR/arch/arm64/boot/dts" -type f -name '*.dtb' | sort)
 
           (cd anykernel3 && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum) \
             > anykernel3/build-info/SHA256SUMS
 
-          suffix='${{ inputs.artifact_suffix }}'
+          suffix="$(printf '%s' "$ARTIFACT_SUFFIX" | tr -cs 'A-Za-z0-9._-' '-')"
+          suffix="${suffix#-}"
+          suffix="${suffix%-}"
           if [[ -n "$suffix" ]]; then
             suffix="-${suffix}"
           fi
