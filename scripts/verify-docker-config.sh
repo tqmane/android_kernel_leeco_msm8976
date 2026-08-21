@@ -18,20 +18,30 @@ missing=0
 
 echo "Verifying Docker/container kernel options..."
 while IFS= read -r wanted; do
+  symbol=""
   case "$wanted" in
     CONFIG_*=y|CONFIG_*=m|CONFIG_*='""')
-      if grep -Fqx "$wanted" "$CONFIG_FILE"; then
-        printf '  [OK] %s\n' "$wanted"
-      else
-        printf '  [MISSING] %s\n' "$wanted" >&2
-        actual="$(grep -E "^${wanted%%=*}=|^# ${wanted%%=*} is not set$" "$CONFIG_FILE" || true)"
-        if [[ -n "$actual" ]]; then
-          printf '            actual: %s\n' "$actual" >&2
-        fi
-        missing=1
-      fi
+      symbol="${wanted%%=*}"
+      ;;
+    '# CONFIG_'*' is not set')
+      symbol="${wanted#\# }"
+      symbol="${symbol% is not set}"
+      ;;
+    *)
+      continue
       ;;
   esac
+
+  if grep -Fqx "$wanted" "$CONFIG_FILE"; then
+    printf '  [OK] %s\n' "$wanted"
+  else
+    printf '  [MISMATCH] %s\n' "$wanted" >&2
+    actual="$(grep -E "^${symbol}=|^# ${symbol} is not set$" "$CONFIG_FILE" || true)"
+    if [[ -n "$actual" ]]; then
+      printf '             actual: %s\n' "$actual" >&2
+    fi
+    missing=1
+  fi
 done < "$FRAGMENT_FILE"
 
 if (( missing != 0 )); then
