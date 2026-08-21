@@ -1,0 +1,215 @@
+name: Build Docker kernel (s2)
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_suffix:
+        description: Optional suffix for the artifact/ZIP name
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: s2-docker-kernel-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build kernel + DTBs + AnyKernel3
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+      KBUILD_BUILD_USER: github-actions
+      KBUILD_BUILD_HOST: s2-docker-builder
+      TOOLCHAIN_DIR: ${{ github.workspace }}/toolchain
+      OUT_DIR: ${{ github.workspace }}/out
+      AK3_COMMIT: e4b1bb25ca2aabcfd57f694a5998d87130701b71
+      ARTIFACT_SUFFIX: ${{ inputs.artifact_suffix }}
+
+    steps:
+      - name: Checkout kernel
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc \
+            bison \
+            build-essential \
+            ca-certificates \
+            cpio \
+            flex \
+            git \
+            libelf-dev \
+            libssl-dev \
+            python3 \
+            rsync \
+            unzip \
+            wget \
+            xz-utils \
+            zip
+
+      - name: Fetch LineageOS GCC 4.9 toolchain
+        run: |
+          git clone \
+            --depth=1 \
+            --branch=lineage-18.1 \
+            https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git \
+            "$TOOLCHAIN_DIR"
+          "$TOOLCHAIN_DIR/bin/aarch64-linux-android-gcc" --version
+
+      - name: Generate lineage_s2_defconfig
+        run: |
+          mkdir -p "$OUT_DIR"
+          make \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            CROSS_COMPILE="$TOOLCHAIN_DIR/bin/aarch64-linux-android-" \
+            lineage_s2_defconfig
+
+      - name: Merge Docker/container config
+        run: |
+          scripts/kconfig/merge_config.sh \
+            -m \
+            -O "$OUT_DIR" \
+            "$OUT_DIR/.config" \
+            arch/arm64/configs/lineage_s2_docker.config
+
+          make \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            CROSS_COMPILE="$TOOLCHAIN_DIR/bin/aarch64-linux-android-" \
+            olddefconfig
+
+      - name: Verify Docker/container config
+        run: |
+          chmod +x scripts/verify-docker-config.sh
+          scripts/verify-docker-config.sh \
+            "$OUT_DIR/.config" \
+            arch/arm64/configs/lineage_s2_docker.config
+
+      - name: Build kernel and all enabled DTBs
+        run: |
+          make \
+            O="$OUT_DIR" \
+            ARCH="$ARCH" \
+            CROSS_COMPILE="$TOOLCHAIN_DIR/bin/aarch64-linux-android-" \
+            -j"$(nproc)" \
+            Image.gz-dtb dtbs
+
+      - name: Verify build outputs
+        run: |
+          test -s "$OUT_DIR/arch/arm64/boot/Image.gz"
+          test -s "$OUT_DIR/arch/arm64/boot/Image.gz-dtb"
+
+          echo "Kernel images:"
+          ls -lh "$OUT_DIR/arch/arm64/boot/Image"* || true
+
+          echo "Built DTBs:"
+          find "$OUT_DIR/arch/arm64/boot/dts" \
+            -type f -name '*.dtb' -print -exec ls -lh {} \;
+
+          test -s "$OUT_DIR/arch/arm64/boot/dts/s2.dtb"
+
+      - name: Prepare raw build artifacts
+        run: |
+          mkdir -p dist/raw/dtbs
+
+          cp "$OUT_DIR/arch/arm64/boot/Image.gz" dist/raw/
+          cp "$OUT_DIR/arch/arm64/boot/Image.gz-dtb" dist/raw/
+          cp "$OUT_DIR/.config" dist/raw/kernel.config
+
+          while IFS= read -r dtb; do
+            rel="${dtb#"$OUT_DIR/arch/arm64/boot/dts/"}"
+            mkdir -p "dist/raw/dtbs/$(dirname "$rel")"
+            cp "$dtb" "dist/raw/dtbs/$rel"
+          done < <(find "$OUT_DIR/arch/arm64/boot/dts" -type f -name '*.dtb' | sort)
+
+          printf '%s\n' "${GITHUB_SHA}" > dist/raw/kernel-source-commit.txt
+          (cd dist/raw && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum) \
+            > dist/raw/SHA256SUMS
+
+      - name: Fetch pinned AnyKernel3
+        run: |
+          git init anykernel3
+          git -C anykernel3 remote add origin https://github.com/osm0sis/AnyKernel3.git
+          git -C anykernel3 fetch --depth=1 origin "$AK3_COMMIT"
+          git -C anykernel3 checkout --detach FETCH_HEAD
+
+          rm -rf \
+            anykernel3/.git \
+            anykernel3/.github \
+            anykernel3/README.md \
+            anykernel3/modules \
+            anykernel3/patch \
+            anykernel3/ramdisk
+
+      - name: Assemble AnyKernel3 package
+        run: |
+          cp anykernel/anykernel.sh anykernel3/anykernel.sh
+          cp "$OUT_DIR/arch/arm64/boot/Image.gz-dtb" anykernel3/Image.gz-dtb
+
+          mkdir -p anykernel3/build-info/dtbs
+          cp "$OUT_DIR/.config" anykernel3/build-info/kernel.config
+          cp arch/arm64/configs/lineage_s2_docker.config anykernel3/build-info/
+          printf '%s\n' "${GITHUB_SHA}" > anykernel3/build-info/kernel-source-commit.txt
+          printf '%s\n' "${AK3_COMMIT}" > anykernel3/build-info/anykernel3-commit.txt
+
+          while IFS= read -r dtb; do
+            rel="${dtb#"$OUT_DIR/arch/arm64/boot/dts/"}"
+            mkdir -p "anykernel3/build-info/dtbs/$(dirname "$rel")"
+            cp "$dtb" "anykernel3/build-info/dtbs/$rel"
+          done < <(find "$OUT_DIR/arch/arm64/boot/dts" -type f -name '*.dtb' | sort)
+
+          (cd anykernel3 && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum) \
+            > anykernel3/build-info/SHA256SUMS
+
+          suffix="$(printf '%s' "$ARTIFACT_SUFFIX" | tr -cs 'A-Za-z0-9._-' '-')"
+          suffix="${suffix#-}"
+          suffix="${suffix%-}"
+          if [[ -n "$suffix" ]]; then
+            suffix="-${suffix}"
+          fi
+
+          zip_name="LeEco-Le2-s2-DockerKernel-${GITHUB_SHA::8}${suffix}-AnyKernel3.zip"
+          (cd anykernel3 && zip -r9 "../$zip_name" . -x '*.git*')
+          mv "$zip_name" dist/
+          echo "ZIP_NAME=$(basename dist/*.zip)" >> "$GITHUB_ENV"
+
+      - name: Show package contents
+        run: |
+          unzip -l "dist/$ZIP_NAME"
+          ls -lh dist/raw/Image.gz-dtb "dist/$ZIP_NAME"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: leeco-s2-docker-kernel-${{ github.sha }}
+          path: |
+            dist/*.zip
+            dist/raw/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Build summary
+        run: |
+          {
+            echo '## LeEco Le 2 (s2) Docker kernel'
+            echo
+            echo "- Source commit: \`${GITHUB_SHA}\`"
+            echo "- Base config: \`arch/arm64/configs/lineage_s2_defconfig\`"
+            echo "- Docker config: \`arch/arm64/configs/lineage_s2_docker.config\`"
+            echo "- AnyKernel3: \`${AK3_COMMIT}\`"
+            echo "- Flashable ZIP: \`${ZIP_NAME}\`"
+            echo
+            echo 'The raw `Image.gz`, `Image.gz-dtb`, generated `.config`, and every built DTB are included in the Actions artifact.'
+          } >> "$GITHUB_STEP_SUMMARY"
