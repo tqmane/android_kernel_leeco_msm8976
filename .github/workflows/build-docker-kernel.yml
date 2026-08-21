@@ -58,6 +58,12 @@ jobs:
             xz-utils \
             zip
 
+      - name: Apply Docker cgroup source compatibility fixes
+        run: |
+          python3 scripts/prepare-docker-source.py
+          git diff --check
+          git diff -- mm/memcontrol.c kernel/cpuset.c
+
       - name: Fetch LineageOS GCC 4.9 toolchain
         run: |
           git clone \

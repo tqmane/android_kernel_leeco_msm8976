@@ -4,6 +4,19 @@ This branch keeps `arch/arm64/configs/lineage_s2_defconfig` as the canonical
 LineageOS base config and layers `arch/arm64/configs/lineage_s2_docker.config`
 on top for the dedicated Docker build.
 
+The Docker configuration enables legacy cgroup code paths that are normally
+unused by the stock s2 defconfig. Before compiling, run:
+
+```sh
+python3 scripts/prepare-docker-source.py
+```
+
+The script applies two narrowly scoped compatibility fixes needed by this old
+3.10 tree: it removes the duplicate memory-cgroup `allow_attach` implementation
+in favor of the common Android cgroup helper, and fixes an incomplete cpuset
+hotplug backport that references the nonexistent `cpus_requested` field. The
+GitHub Actions workflow runs this preparation step automatically.
+
 ## Build with GitHub Actions
 
 After this change is on the default branch:
